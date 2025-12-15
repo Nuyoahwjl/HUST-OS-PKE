@@ -9,4 +9,7 @@
 void insert_to_ready_queue( process* proc );
 void schedule();
 
+void insert_to_blocked_queue(process* proc);
+void remove_block_and_insert(process* proc);
+
 #endif

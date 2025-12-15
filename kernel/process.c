@@ -191,7 +191,7 @@ int do_fork( process* parent)
         memcpy( (void*)lookup_pa(child->pagetable, child->mapped_info[STACK_SEGMENT].va),
           (void*)lookup_pa(parent->pagetable, parent->mapped_info[i].va), PGSIZE );
         break;
-      case HEAP_SEGMENT:
+      case HEAP_SEGMENT: {
         // build a same heap for child process.
 
         // convert free_pages_address into a filter to skip reclaimed blocks in the heap
@@ -221,7 +221,8 @@ int do_fork( process* parent)
         // copy the heap manager from parent to child
         memcpy((void*)&child->user_heap, (void*)&parent->user_heap, sizeof(parent->user_heap));
         break;
-      case CODE_SEGMENT:
+      }
+      case CODE_SEGMENT: {
         // TODO (lab3_1): implment the mapping of child code segment to parent's
         // code segment.
         // hint: the virtual address mapping of code segment is tracked in mapped_info
@@ -231,15 +232,22 @@ int do_fork( process* parent)
         // address region of child to the physical pages that actually store the code
         // segment of parent process.
         // DO NOT COPY THE PHYSICAL PAGES, JUST MAP THEM.
-        map_pages(
-          child->pagetable,
-          parent->mapped_info[i].va,
-          parent->mapped_info[i].npages*PGSIZE,
-          lookup_pa(parent->pagetable,
-          parent->mapped_info[i].va),
-          prot_to_type(
-            PROT_EXEC|PROT_READ,1
-        ));
+
+        uint64 base_va = parent->mapped_info[i].va;
+        int total = parent->mapped_info[i].npages;
+
+        for (int k = 0; k < total; k++) {
+            uint64 cur_va = base_va + (uint64)k * PGSIZE;
+            uint64 pa = lookup_pa(parent->pagetable, cur_va);
+
+            map_pages(child->pagetable,
+                      cur_va,
+                      PGSIZE,
+                      pa,
+                      prot_to_type(PROT_READ | PROT_WRITE | PROT_EXEC, 1));
+
+            sprint("do_fork map code segment at pa:%lx of parent to child at va:%lx.\n", pa, cur_va);
+        }
 
         // after mapping, register the vm region (do not delete codes below!)
         child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
@@ -248,6 +256,33 @@ int do_fork( process* parent)
         child->mapped_info[child->total_mapped_region].seg_type = CODE_SEGMENT;
         child->total_mapped_region++;
         break;
+      }
+      case DATA_SEGMENT: {
+        uint64 start_va = parent->mapped_info[i].va;
+        int pages = parent->mapped_info[i].npages;
+        
+        for (int k = 0; k < pages; k++) {
+            uint64 va = start_va + (uint64)k * PGSIZE;
+            uint64 old_pa = lookup_pa(parent->pagetable, va);
+
+            char *pa_copy = alloc_page();
+            memcpy(pa_copy, (void *)old_pa, PGSIZE);
+
+            map_pages(child->pagetable,
+                      va,
+                      PGSIZE,
+                      (uint64)pa_copy,
+                      prot_to_type(PROT_READ | PROT_WRITE, 1));
+        }
+
+        // after mapping, register the vm region (do not delete codes below!)
+        child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
+        child->mapped_info[child->total_mapped_region].npages = 
+          parent->mapped_info[i].npages;
+        child->mapped_info[child->total_mapped_region].seg_type = DATA_SEGMENT;
+        child->total_mapped_region++;
+        break;
+      }
     }
   }
 
@@ -258,3 +293,52 @@ int do_fork( process* parent)
 
   return child->pid;
 }
+
+
+
+int do_wait(int pid)
+{
+  int has_child = 0;
+
+  if (pid == -1) {
+    int idx = 0;
+    while (idx < NPROC) {
+      process *cp = &procs[idx];
+      if (cp->parent == current) {
+        has_child = 1;
+        if (cp->status == ZOMBIE) {
+          cp->status = FREE;
+          return idx;
+        }
+      }
+      idx++;
+    }
+
+    if (!has_child) {
+      return -1;
+    }
+
+    insert_to_blocked_queue(current);
+    schedule();
+    return -2;
+  }
+
+  if (pid >= 0 && pid < NPROC) {
+    process *cp = &procs[pid];
+    if (cp->parent != current) {
+      return -1;
+    }
+
+    if (cp->status == ZOMBIE) {
+      cp->status = FREE;
+      return pid;
+    }
+
+    insert_to_blocked_queue(current);
+    schedule();
+    return -2;
+  }
+
+  return -1;
+}
+
